@@ -1,9 +1,23 @@
 from fastapi import FastAPI, UploadFile, File
 from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
+import pdfplumber
+import shutil
+import os
+
 
 app = FastAPI(
     title="AI Finance Coach API",
     version="1.0.0"
+)
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # -------------------
@@ -36,10 +50,23 @@ def dashboard():
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
 
+    os.makedirs("uploads", exist_ok=True)
+
+    file_path = f"uploads/{file.filename}"
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    text = ""
+
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+
     return {
         "success": True,
         "filename": file.filename,
-        "message": "PDF başarıyla yüklendi"
+        "preview": text[:1000]
     }
 
 # -------------------
@@ -79,22 +106,20 @@ def transactions():
 
 @app.get("/analytics")
 def analytics():
-
     return {
-        "categories": {
-            "Market": 8500,
-            "Yeme İçme": 3200,
-            "Ulaşım": 1800,
-            "Eğlence": 2500
-        },
-
+        "categories": [
+            {"name": "Market", "amount": 8500},
+            {"name": "Yeme İçme", "amount": 3200},
+            {"name": "Ulaşım", "amount": 1800},
+            {"name": "Eğlence", "amount": 2500}
+        ],
         "monthly_expenses": [
-            {"month": "Ocak", "amount": 12000},
-            {"month": "Şubat", "amount": 15000},
-            {"month": "Mart", "amount": 14000},
-            {"month": "Nisan", "amount": 18000},
-            {"month": "Mayıs", "amount": 22000},
-            {"month": "Haziran", "amount": 31200}
+            {"month": "Oca", "amount": 12000},
+            {"month": "Şub", "amount": 15000},
+            {"month": "Mar", "amount": 14000},
+            {"month": "Nis", "amount": 18000},
+            {"month": "May", "amount": 22000},
+            {"month": "Haz", "amount": 31200}
         ]
     }
 
