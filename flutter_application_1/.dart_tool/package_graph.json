@@ -9,6 +9,7 @@
       "dependencies": [
         "cupertino_icons",
         "file_picker",
+        "fl_chart",
         "flutter",
         "http"
       ],
@@ -343,6 +344,23 @@
     {
       "name": "petitparser",
       "version": "7.0.2",
+      "dependencies": [
+        "collection",
+        "meta"
+      ]
+    },
+    {
+      "name": "fl_chart",
+      "version": "1.2.0",
+      "dependencies": [
+        "equatable",
+        "flutter",
+        "vector_math"
+      ]
+    },
+    {
+      "name": "equatable",
+      "version": "2.0.8",
       "dependencies": [
         "collection",
         "meta"
