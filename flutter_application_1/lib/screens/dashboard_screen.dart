@@ -1,231 +1,313 @@
 import 'package:flutter/material.dart';
+import '../services/api_service.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
 
+  String _formatMoney(dynamic value) {
+    final number = (value as num?)?.toDouble() ?? 0;
+    return "₺${number.toStringAsFixed(2)}";
+  }
+
+  String _signedMoney(num value) {
+    final prefix = value < 0 ? "-₺" : "₺";
+    return "$prefix${value.abs().toStringAsFixed(2)}";
+  }
+
+  Color _amountColor(num value) {
+    if (value < 0) return const Color(0xFFB6542D);
+    if (value > 0) return const Color(0xFF1E6B52);
+    return const Color(0xFF1E2722);
+  }
+
+  IconData _categoryIcon(String category) {
+    switch (category.toLowerCase()) {
+      case "market":
+        return Icons.shopping_bag_rounded;
+      case "yeme içme":
+        return Icons.restaurant_rounded;
+      case "ulaşım":
+        return Icons.directions_bus_rounded;
+      case "gelir":
+        return Icons.account_balance_wallet_rounded;
+      default:
+        return Icons.payments_rounded;
+    }
+  }
+
+  String _riskMessage(String risk) {
+    switch (risk) {
+      case "Low":
+        return "Harcamaların gelirine göre dengeli ilerliyor. Mevcut disiplin korunursa hedef birikim için uygun zemin var.";
+      case "Medium":
+        return "Giderlerin gelire yaklaşmaya başlıyor. Özellikle değişken kategorilerde küçük kesintiler etkili olabilir.";
+      default:
+        return "Finansal akış baskı altında görünüyor. Gider yoğun kategorileri azaltman kısa vadede rahatlama sağlar.";
+    }
+  }
+
+  Color _riskColor(String risk) {
+    switch (risk) {
+      case "Low":
+        return const Color(0xFF1E6B52);
+      case "Medium":
+        return const Color(0xFFC96B3B);
+      default:
+        return const Color(0xFFB04242);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      body: FutureBuilder<Map<String, dynamic>>(
+        future: ApiService.getDashboard(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const _DashboardLoadingState();
+          }
 
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          if (snapshot.hasError) {
+            return _DashboardErrorState(
+              message: "Dashboard verisi alınamadı. Backend bağlantısını ve endpoint yanıtını kontrol et.",
+            );
+          }
 
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          final data = snapshot.data ?? {};
+          final income = (data["income"] as num?) ?? 0;
+          final expense = (data["expense"] as num?) ?? 0;
+          final saving = (data["saving"] as num?) ?? 0;
+          final risk = data["risk"]?.toString() ?? "-";
+          final recentTransactions =
+              (data["recent_transactions"] as List<dynamic>? ?? []);
 
-              const SizedBox(height: 10),
-
-              const Text(
-                "Merhaba Ezgi 👋",
-                style: TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 25),
-
-              // Toplam Varlık Kartı
-
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(24),
-
-                  gradient: const LinearGradient(
-                    colors: [
-                      Color(0xFF0F172A),
-                      Color(0xFF1E293B),
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 120),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Finansal\npanorama",
+                    style: theme.textTheme.headlineLarge,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    "Bugünün görünümü gelir, gider ve davranış trendlerinden derlendi.",
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 24),
+                  _HeroBalanceCard(
+                    saving: _formatMoney(saving),
+                    income: _formatMoney(income),
+                    expense: _formatMoney(expense),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _MetricPanel(
+                          title: "Gelir",
+                          value: _formatMoney(income),
+                          icon: Icons.north_east_rounded,
+                          tone: const Color(0xFFDDEEE7),
+                          iconColor: const Color(0xFF1E6B52),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: _MetricPanel(
+                          title: "Gider",
+                          value: _formatMoney(expense),
+                          icon: Icons.south_east_rounded,
+                          tone: const Color(0xFFF4E0D6),
+                          iconColor: const Color(0xFFC96B3B),
+                        ),
+                      ),
                     ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
                   ),
-                ),
-
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-
-                    Text(
-                      "Toplam Varlık",
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _MetricPanel(
+                          title: "Tasarruf",
+                          value: _formatMoney(saving),
+                          icon: Icons.savings_rounded,
+                          tone: const Color(0xFFE7ECE8),
+                          iconColor: const Color(0xFF304238),
+                        ),
                       ),
-                    ),
-
-                    SizedBox(height: 12),
-
-                    Text(
-                      "₺13.800",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 36,
-                        fontWeight: FontWeight.bold,
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: _MetricPanel(
+                          title: "Risk",
+                          value: risk,
+                          icon: Icons.shield_outlined,
+                          tone: const Color(0xFFF1EEE5),
+                          iconColor: _riskColor(risk),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 25),
-
-              GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                crossAxisSpacing: 15,
-                mainAxisSpacing: 15,
-                childAspectRatio: 1.2,
-
-                children: const [
-
-                  StatCard(
-                    title: "Gelir",
-                    amount: "₺45.000",
-                    icon: Icons.trending_up,
+                    ],
                   ),
-
-                  StatCard(
-                    title: "Gider",
-                    amount: "₺31.200",
-                    icon: Icons.trending_down,
+                  const SizedBox(height: 24),
+                  _InsightCard(
+                    risk: risk,
+                    message: _riskMessage(risk),
+                    accent: _riskColor(risk),
                   ),
-
-                  StatCard(
-                    title: "Tasarruf",
-                    amount: "₺13.800",
-                    icon: Icons.savings,
+                  const SizedBox(height: 28),
+                  Text(
+                    "Son işlemler",
+                    style: theme.textTheme.headlineMedium,
                   ),
-
-                  StatCard(
-                    title: "Risk",
-                    amount: "Düşük",
-                    icon: Icons.shield,
-                  ),
+                  const SizedBox(height: 12),
+                  if (recentTransactions.isEmpty)
+                    const _EmptyBlock(
+                      title: "Henüz işlem görünmüyor",
+                      subtitle: "İşlem ekledikçe burada en güncel hareketleri göreceksin.",
+                    )
+                  else
+                    ...recentTransactions.map((item) {
+                      final map = item as Map<String, dynamic>;
+                      final amount = (map["amount"] as num?) ?? 0;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: _TransactionCard(
+                          title: map["title"]?.toString() ?? "-",
+                          category: map["category"]?.toString() ?? "-",
+                          amount: _signedMoney(amount),
+                          amountColor: _amountColor(amount),
+                          icon: _categoryIcon(map["category"]?.toString() ?? ""),
+                        ),
+                      );
+                    }),
                 ],
               ),
-
-              const SizedBox(height: 25),
-
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-
-                    Text(
-                      "🤖 AI İçgörüsü",
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-
-                    SizedBox(height: 10),
-
-                    Text(
-                      "Bu ay yemek harcamaların geçen aya göre %18 arttı. "
-                      "Bu şekilde devam edersen yaklaşık ₺790 ekstra harcama oluşabilir.",
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 25),
-
-              const Text(
-                "Son İşlemler",
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 15),
-
-              const TransactionTile(
-                title: "Migros",
-                amount: "-₺850",
-                icon: Icons.shopping_cart,
-              ),
-
-              const TransactionTile(
-                title: "Starbucks",
-                amount: "-₺120",
-                icon: Icons.local_cafe,
-              ),
-
-              const TransactionTile(
-                title: "Trendyol",
-                amount: "-₺420",
-                icon: Icons.shopping_bag,
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
 }
 
-class StatCard extends StatelessWidget {
-  final String title;
-  final String amount;
-  final IconData icon;
+class _HeroBalanceCard extends StatelessWidget {
+  final String saving;
+  final String income;
+  final String expense;
 
-  const StatCard({
-    super.key,
-    required this.title,
-    required this.amount,
-    required this.icon,
+  const _HeroBalanceCard({
+    required this.saving,
+    required this.income,
+    required this.expense,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(18),
-
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
+        borderRadius: BorderRadius.circular(30),
+        gradient: const LinearGradient(
+          colors: [
+            Color(0xFF17352A),
+            Color(0xFF28503F),
+            Color(0xFF3D6A55),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [
           BoxShadow(
-            color: Colors.black12,
-            blurRadius: 8,
+            color: Color(0x22000000),
+            blurRadius: 24,
+            offset: Offset(0, 16),
           ),
         ],
       ),
-
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-
-          Icon(icon, size: 35),
-
-          const SizedBox(height: 10),
-
-          Text(title),
-
-          const SizedBox(height: 5),
-
+          const Text(
+            "Toplam bakiye",
+            style: TextStyle(
+              color: Color(0xCCFFFFFF),
+              fontSize: 15,
+            ),
+          ),
+          const SizedBox(height: 12),
           Text(
-            amount,
+            saving,
             style: const TextStyle(
+              color: Colors.white,
+              fontSize: 38,
+              fontWeight: FontWeight.w800,
+              height: 1,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: _MiniStat(
+                  label: "Gelir",
+                  value: income,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _MiniStat(
+                  label: "Gider",
+                  value: expense,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _MiniStat({
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0x1AFFFFFF),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0x22FFFFFF)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xCCFFFFFF),
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
               fontSize: 18,
-              fontWeight: FontWeight.bold,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],
@@ -234,35 +316,307 @@ class StatCard extends StatelessWidget {
   }
 }
 
-class TransactionTile extends StatelessWidget {
+class _MetricPanel extends StatelessWidget {
   final String title;
+  final String value;
+  final IconData icon;
+  final Color tone;
+  final Color iconColor;
+
+  const _MetricPanel({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.tone,
+    required this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFCF6),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFE6E1D7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: tone,
+            child: Icon(icon, color: iconColor),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            title,
+            style: const TextStyle(
+              color: Color(0xFF64726C),
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Color(0xFF1E2722),
+              fontSize: 19,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InsightCard extends StatelessWidget {
+  final String risk;
+  final String message;
+  final Color accent;
+
+  const _InsightCard({
+    required this.risk,
+    required this.message,
+    required this.accent,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFCF6),
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: const Color(0xFFE8E0D2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                decoration: BoxDecoration(
+                  color: accent.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  "Risk: $risk",
+                  style: TextStyle(
+                    color: accent,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            "Finans notu",
+            style: TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFF1E2722),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            message,
+            style: const TextStyle(
+              color: Color(0xFF55635D),
+              fontSize: 15,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TransactionCard extends StatelessWidget {
+  final String title;
+  final String category;
   final String amount;
+  final Color amountColor;
   final IconData icon;
 
-  const TransactionTile({
-    super.key,
+  const _TransactionCard({
     required this.title,
+    required this.category,
     required this.amount,
+    required this.amountColor,
     required this.icon,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFCF6),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFE9E2D8)),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: const Color(0xFFE7EFEA),
+            child: Icon(icon, color: const Color(0xFF2F5646)),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    color: Color(0xFF1E2722),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  category,
+                  style: const TextStyle(
+                    color: Color(0xFF68756E),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            amount,
+            style: TextStyle(
+              color: amountColor,
+              fontWeight: FontWeight.w800,
+              fontSize: 15,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-      child: ListTile(
-        leading: CircleAvatar(
-          child: Icon(icon),
-        ),
-        title: Text(title),
-        trailing: Text(
-          amount,
-          style: const TextStyle(
-            color: Colors.red,
-            fontWeight: FontWeight.bold,
+class _DashboardLoadingState extends StatelessWidget {
+  const _DashboardLoadingState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: CircularProgressIndicator(),
+    );
+  }
+}
+
+class _DashboardErrorState extends StatelessWidget {
+  final String message;
+
+  const _DashboardErrorState({
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFCF6),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFFE9DED4)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.cloud_off_rounded,
+                  size: 42,
+                  color: Color(0xFFC96B3B),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  "Veri alınamadı",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFF5B6761),
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _EmptyBlock extends StatelessWidget {
+  final String title;
+  final String subtitle;
+
+  const _EmptyBlock({
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFCF6),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFE7DED2)),
+      ),
+      child: Column(
+        children: [
+          const Icon(
+            Icons.inbox_rounded,
+            size: 40,
+            color: Color(0xFF7B887F),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF1E2722),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFF64716B),
+              height: 1.45,
+            ),
+          ),
+        ],
       ),
     );
   }

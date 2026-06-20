@@ -2,12 +2,6 @@
   "configVersion": 2,
   "packages": [
     {
-      "name": "args",
-      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/args-2.7.0",
-      "packageUri": "lib/",
-      "languageVersion": "3.3"
-    },
-    {
       "name": "async",
       "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/async-2.13.1",
       "packageUri": "lib/",
@@ -38,22 +32,10 @@
       "languageVersion": "3.4"
     },
     {
-      "name": "cross_file",
-      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/cross_file-0.3.5+2",
-      "packageUri": "lib/",
-      "languageVersion": "3.8"
-    },
-    {
       "name": "cupertino_icons",
       "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/cupertino_icons-1.0.9",
       "packageUri": "lib/",
       "languageVersion": "3.9"
-    },
-    {
-      "name": "dbus",
-      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/dbus-0.7.14",
-      "packageUri": "lib/",
-      "languageVersion": "2.17"
     },
     {
       "name": "equatable",
@@ -75,9 +57,9 @@
     },
     {
       "name": "file_picker",
-      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/file_picker-10.3.10",
+      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/file_picker-5.5.0",
       "packageUri": "lib/",
-      "languageVersion": "3.4"
+      "languageVersion": "2.17"
     },
     {
       "name": "fl_chart",
@@ -176,12 +158,6 @@
       "languageVersion": "3.4"
     },
     {
-      "name": "petitparser",
-      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/petitparser-7.0.2",
-      "packageUri": "lib/",
-      "languageVersion": "3.8"
-    },
-    {
       "name": "plugin_platform_interface",
       "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/plugin_platform_interface-2.1.8",
       "packageUri": "lib/",
@@ -256,12 +232,6 @@
     {
       "name": "win32",
       "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/win32-5.15.0",
-      "packageUri": "lib/",
-      "languageVersion": "3.8"
-    },
-    {
-      "name": "xml",
-      "rootUri": "file:///C:/Users/ezgi_/AppData/Local/Pub/Cache/hosted/pub.dev/xml-6.6.1",
       "packageUri": "lib/",
       "languageVersion": "3.8"
     },
