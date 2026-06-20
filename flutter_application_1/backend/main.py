@@ -35,7 +35,6 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-
 def get_db():
     db = SessionLocal()
     try:
