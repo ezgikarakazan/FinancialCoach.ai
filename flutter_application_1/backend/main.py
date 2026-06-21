@@ -1,22 +1,22 @@
-from datetime import date
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import List
-
 import os
 import shutil
 
-import fitz  # PyMuPDF
-import pdfplumber
-import pytesseract
-from PIL import Image
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel, ConfigDict, EmailStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, engine
 from models.transaction import Base, Transaction
-from collections import defaultdict
+from models.user import User
 
 
 app = FastAPI(
@@ -35,12 +35,65 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
+
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, password_hash: str) -> bool:
+    return pwd_context.verify(plain_password, password_hash)
+
+
+def create_access_token(user_id: int) -> str:
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": str(user_id),
+        "iat": int(now.timestamp()),
+        "exp": int(expire.timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Yetkisiz erisim")
+
+    token = credentials.credentials
+
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Gecersiz token")
+        user_id = int(sub)
+    except (JWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Gecersiz token")
+
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanici bulunamadi")
+
+    return user
 
 
 class TransactionCreate(BaseModel):
@@ -58,6 +111,32 @@ class TransactionOut(BaseModel):
     date: date
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserAuthOut(BaseModel):
+    id: int
+    name: str
+    email: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserAuthOut
+
 
 MONTH_NAMES_TR = {
     1: "Oca",
@@ -79,7 +158,11 @@ def format_month_label(month_key: str) -> str:
     year_str, month_str = month_key.split("-")
     month_num = int(month_str)
     return f"{MONTH_NAMES_TR.get(month_num, month_str)} {year_str}"
+
+
 def extract_pdf_text(file_path: str) -> str:
+    import pdfplumber
+
     text_chunks: List[str] = []
 
     with pdfplumber.open(file_path) as pdf:
@@ -90,6 +173,10 @@ def extract_pdf_text(file_path: str) -> str:
 
 
 def extract_pdf_text_with_ocr(file_path: str) -> str:
+    import fitz  # PyMuPDF
+    from PIL import Image
+    import pytesseract
+
     tesseract_cmd = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
     if os.path.exists(tesseract_cmd):
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
@@ -115,6 +202,69 @@ def extract_pdf_text_with_ocr(file_path: str) -> str:
 @app.get("/")
 def home():
     return {"message": "AI Finance Coach API"}
+
+
+@app.post("/auth/register", response_model=AuthResponse, status_code=201)
+def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    email = payload.email.strip().lower()
+    password = payload.password.strip()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Ad alani zorunludur")
+
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Sifre en az 8 karakter olmalidir")
+
+    user = User(
+        name=name,
+        email=email,
+        password_hash=hash_password(password),
+    )
+
+    db.add(user)
+    try:
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Bu e-posta zaten kayitli")
+
+    token = create_access_token(user.id)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        },
+    }
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="E-posta veya sifre hatali")
+
+    token = create_access_token(user.id)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        },
+    }
+
+
+@app.get("/auth/me", response_model=UserAuthOut)
+def me(current_user: User = Depends(get_current_user)):
+    return current_user
 
 
 @app.get("/dashboard")
@@ -184,12 +334,12 @@ async def upload_pdf(file: UploadFile = File(...)):
             text = extract_pdf_text_with_ocr(file_path)
 
         return {
-    "success": True,
-    "filename": file.filename,
-    "extracted_text": text,
-    "preview": text[:1000],
-    "is_empty": not bool(text.strip()),
-}
+            "success": True,
+            "filename": file.filename,
+            "extracted_text": text,
+            "preview": text[:1000],
+            "is_empty": not bool(text.strip()),
+        }
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"PDF processing failed: {exc}") from exc
@@ -233,7 +383,6 @@ def analytics(db: Session = Depends(get_db)):
     for item in items:
         amount = float(item.amount or 0)
 
-        # Sadece giderleri analytics'e dahil et
         if amount >= 0:
             continue
 
@@ -250,7 +399,7 @@ def analytics(db: Session = Depends(get_db)):
         for name, total in sorted(
             category_totals.items(),
             key=lambda pair: pair[1],
-            reverse=True
+            reverse=True,
         )
     ]
 
@@ -263,6 +412,8 @@ def analytics(db: Session = Depends(get_db)):
         "categories": categories,
         "monthly_expenses": monthly_expenses,
     }
+
+
 @app.get("/prediction")
 def prediction(db: Session = Depends(get_db)):
     items = (
@@ -276,7 +427,6 @@ def prediction(db: Session = Depends(get_db)):
     for item in items:
         amount = float(item.amount or 0)
 
-        # Sadece giderleri tahmin için kullan
         if amount >= 0 or not item.date:
             continue
 
@@ -290,7 +440,7 @@ def prediction(db: Session = Depends(get_db)):
         return {
             "predicted_expense": 0,
             "confidence": 0,
-            "message": "Henüz yeterli gider verisi yok. Tahmin oluşturmak için işlem eklemelisin."
+            "message": "Henuz yeterli gider verisi yok. Tahmin olusturmak icin islem eklemelisin.",
         }
 
     if len(monthly_values) == 1:

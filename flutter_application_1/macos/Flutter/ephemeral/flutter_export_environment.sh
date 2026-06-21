@@ -1,8 +1,8 @@
 #!/bin/sh
 # This is a generated file; do not edit or check into version control.
 export "FLUTTER_ROOT=C:\Users\ezgi_\OneDrive\Masaüstü\flutter"
-export "FLUTTER_APPLICATION_PATH=E:\project\Yeni klasör\flutter_application_1"
-export "FLUTTER_FRAMEWORK_SWIFT_PACKAGE_PATH=E:\project\Yeni klasör\flutter_application_1\macos\Flutter\ephemeral\Packages\.packages\FlutterFramework"
+export "FLUTTER_APPLICATION_PATH=E:\project\Yeni klasör\FinancialCoach.ai\flutter_application_1"
+export "FLUTTER_FRAMEWORK_SWIFT_PACKAGE_PATH=E:\project\Yeni klasör\FinancialCoach.ai\flutter_application_1\macos\Flutter\ephemeral\Packages\.packages\FlutterFramework"
 export "COCOAPODS_PARALLEL_CODE_SIGN=true"
 export "FLUTTER_BUILD_DIR=build"
 export "FLUTTER_BUILD_NAME=1.0.0"

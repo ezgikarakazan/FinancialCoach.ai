@@ -11,9 +11,6 @@ class UploadScreen extends StatefulWidget {
 
 class _UploadScreenState extends State<UploadScreen> {
   int _currentStep = 0;
-  String? _pdfPath;
-  String? _pdfFileName;
-  String _extractedText = '';
   List<Map<String, dynamic>> _candidateTransactions = [];
   bool _isProcessing = false;
 
@@ -33,10 +30,7 @@ class _UploadScreenState extends State<UploadScreen> {
 
         reader.onLoadEnd.listen((e) async {
           setState(() {
-            _pdfFileName = file.name;
-            _pdfPath = file.name;
             _currentStep = 1;
-            _extractedText = '';
             _candidateTransactions = [];
           });
 
@@ -68,7 +62,6 @@ class _UploadScreenState extends State<UploadScreen> {
           "17.06.2026 | Market | 200.00";
 
       setState(() {
-        _extractedText = mockText;
         _candidateTransactions = _parseTransactions(mockText);
         _currentStep = 2;
       });
@@ -182,9 +175,6 @@ class _UploadScreenState extends State<UploadScreen> {
   void _reset() {
     setState(() {
       _currentStep = 0;
-      _pdfPath = null;
-      _pdfFileName = null;
-      _extractedText = '';
       _candidateTransactions = [];
     });
   }
