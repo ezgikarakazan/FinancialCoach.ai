@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dart:html' as html;
+import 'dart:typed_data';
 import '../services/api_service.dart';
+import 'pdf_history_screen.dart';
 
 class UploadScreen extends StatefulWidget {
   const UploadScreen({super.key});
@@ -11,12 +13,20 @@ class UploadScreen extends StatefulWidget {
 
 class _UploadScreenState extends State<UploadScreen> {
   int _currentStep = 0;
+  int _reviewIndex = 0;
+  int _addedCount = 0;
+  int _skippedCount = 0;
+  int? _currentUploadId;
+  String _uploadedFileName = '';
+  String? _emptyStateOverrideMessage;
   List<Map<String, dynamic>> _candidateTransactions = [];
   bool _isProcessing = false;
+  bool _isDeciding = false;
 
   Future<void> _pickPdf() async {
     try {
-      final html.InputElement uploadInput = html.document.createElement('input') as html.InputElement;
+      final html.InputElement uploadInput =
+          html.document.createElement('input') as html.InputElement;
       uploadInput.type = 'file';
       uploadInput.accept = '.pdf';
       uploadInput.click();
@@ -26,50 +36,129 @@ class _UploadScreenState extends State<UploadScreen> {
         if (files == null || files.isEmpty) return;
 
         final file = files[0];
+        setState(() {
+          _isProcessing = true;
+          _currentStep = 0;
+        });
+
         final reader = html.FileReader();
 
-        reader.onLoadEnd.listen((e) async {
-          setState(() {
-            _currentStep = 1;
-            _candidateTransactions = [];
-          });
+        reader.onError.listen((_) {
+          if (!mounted) return;
+          setState(() => _isProcessing = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Dosya okunamadı. Lütfen tekrar dene."),
+            ),
+          );
+        });
 
-          // File buffer'ını API'ye gönder
-          await _extractPdfFromWeb(file);
+        reader.onAbort.listen((_) {
+          if (!mounted) return;
+          setState(() => _isProcessing = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Dosya okuma iptal edildi.")),
+          );
+        });
+
+        reader.onLoadEnd.listen((e) async {
+          try {
+            final bytes = _extractBytesFromReaderResult(reader.result);
+            if (bytes == null || bytes.isEmpty) {
+              throw Exception('Dosya byte verisi boş');
+            }
+
+            await _extractPdfFromWeb(fileName: file.name, bytes: bytes);
+          } catch (err) {
+            if (!mounted) return;
+            setState(() => _isProcessing = false);
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text("Dosya işlenemedi: $err")));
+          }
         });
 
         reader.readAsArrayBuffer(file);
       });
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Dosya seçme hatası: $e")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Dosya seçme hatası: $e")));
       }
     }
   }
 
-  Future<void> _extractPdfFromWeb(html.File file) async {
+  List<int>? _extractBytesFromReaderResult(Object? result) {
+    if (result == null) return null;
+
+    if (result is ByteBuffer) {
+      return Uint8List.view(result);
+    }
+
+    if (result is Uint8List) {
+      return result;
+    }
+
+    if (result is List<int>) {
+      return result;
+    }
+
+    return null;
+  }
+
+  Future<void> _extractPdfFromWeb({
+    required String fileName,
+    required List<int> bytes,
+  }) async {
     setState(() => _isProcessing = true);
 
     try {
-      // Web'de file path kullanamadığımız için, direktmen extracted text'e mock data koyabiliriz
-      // veya backend endpoint'ini değiştirebiliriz
-      
-      // Şimdilik örnek text ile ilerle
-      final mockText = "15.06.2026 | Starbucks | 125.50\n"
-          "16.06.2026 | Uber | 45.00\n"
-          "17.06.2026 | Market | 200.00";
+      final response = await ApiService.uploadPdf(
+        bytes: bytes,
+        fileName: fileName,
+      );
+
+      final isDuplicate = response['duplicate'] == true;
+      final uploadIdRaw = response['upload_id'];
+      final uploadId = uploadIdRaw is int
+          ? uploadIdRaw
+          : int.tryParse(uploadIdRaw?.toString() ?? '');
+
+      final allCandidates = _parseCandidatesFromResponse(response);
+      final addedSoFar = allCandidates.where((c) => c['status'] == 'added').length;
+      final skippedSoFar = allCandidates.where((c) => c['status'] == 'skipped').length;
+
+      final reviewCandidates = isDuplicate
+          ? allCandidates.where((c) => c['status'] == 'pending').toList()
+          : allCandidates;
 
       setState(() {
-        _candidateTransactions = _parseTransactions(mockText);
-        _currentStep = 2;
+        _currentUploadId = uploadId;
+        _candidateTransactions = reviewCandidates;
+        _addedCount = addedSoFar;
+        _skippedCount = skippedSoFar;
+        _reviewIndex = 0;
+        _uploadedFileName = fileName;
+        _emptyStateOverrideMessage = (isDuplicate && reviewCandidates.isEmpty)
+            ? "Bu PDF'i daha önce yükledin ve tüm işlemler zaten incelenmiş. Geçmişten tekrar bakabilirsin."
+            : null;
+        _currentStep = reviewCandidates.isEmpty ? 2 : 1;
       });
+
+      if (isDuplicate && mounted) {
+        final message = reviewCandidates.isEmpty
+            ? "Bu PDF'i daha önce yükledin, tüm işlemler zaten incelenmiş."
+            : "Bu PDF'i daha önce yükledin. Kalan ${reviewCandidates.length} işlemi incelemeye devam ediyorsun.";
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("PDF yüklenirken hata: $e")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("PDF yüklenirken hata: $e")));
         setState(() => _currentStep = 0);
       }
     } finally {
@@ -77,114 +166,129 @@ class _UploadScreenState extends State<UploadScreen> {
     }
   }
 
-  List<Map<String, dynamic>> _parseTransactions(String text) {
-    final transactions = <Map<String, dynamic>>[];
-    final lines = text.split('\n');
+  List<Map<String, dynamic>> _parseCandidatesFromResponse(
+    Map<String, dynamic> response,
+  ) {
+    final backendParsed = response['parsed_transactions'];
+    if (backendParsed is! List) return [];
 
-    final pattern = RegExp(
-      r'(\d{1,2})[./\-](\d{1,2})[./\-](\d{4})\s*\|\s*([^|]+)\s*\|\s*([0-9,.]+)',
-    );
+    final converted = <Map<String, dynamic>>[];
 
-    for (final line in lines) {
-      final match = pattern.firstMatch(line.trim());
-      if (match != null) {
-        try {
-          final day = int.parse(match.group(1)!);
-          final month = int.parse(match.group(2)!);
-          final year = int.parse(match.group(3)!);
-          final title = match.group(4)!.trim();
-          final amountStr = match.group(5)!.replaceAll(',', '.');
-          final amount = double.parse(amountStr);
+    for (final item in backendParsed) {
+      if (item is! Map) continue;
 
-          if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-            transactions.add({
-              'date': DateTime(year, month, day),
-              'title': title,
-              'amount': -amount,
-              'category': _guessCategory(title),
-              'selected': true,
-            });
-          }
-        } catch (_) {}
+      final idRaw = item['id'];
+      final id = idRaw is int ? idRaw : int.tryParse(idRaw?.toString() ?? '');
+      final dateRaw = item['date']?.toString();
+      final title = item['title']?.toString().trim() ?? '';
+      final category = item['category']?.toString().trim() ?? 'Diğer';
+      final amountRaw = item['amount'];
+      final status = item['status']?.toString() ?? 'pending';
+
+      final date = dateRaw == null ? null : DateTime.tryParse(dateRaw);
+      final amount = amountRaw is num
+          ? amountRaw.toDouble()
+          : double.tryParse(amountRaw.toString());
+
+      if (id == null || date == null || title.isEmpty || amount == null) {
+        continue;
       }
+
+      converted.add({
+        'id': id,
+        'date': date,
+        'title': title,
+        'amount': amount,
+        'category': category,
+        'status': status,
+      });
     }
 
-    return transactions;
+    return converted;
   }
 
-  String _guessCategory(String title) {
-    final lower = title.toLowerCase();
-
-    if (lower.contains('rest') || lower.contains('yiyecek') || lower.contains('kafe') || lower.contains('starbucks')) {
-      return 'Yiyecek';
-    } else if (lower.contains('uber') || lower.contains('taxi') || lower.contains('otobüs') || lower.contains('metro')) {
-      return 'Ulaşım';
-    } else if (lower.contains('konut') || lower.contains('kira') || lower.contains('elektrik')) {
-      return 'Konut';
-    } else if (lower.contains('sinema') || lower.contains('oyun') || lower.contains('tiyatro')) {
-      return 'Eğlence';
-    } else if (lower.contains('eczane') || lower.contains('hastane') || lower.contains('doktor')) {
-      return 'Sağlık';
-    }
-    return 'Diğer';
-  }
-
-  Future<void> _confirmImport() async {
-    final selectedTxs = _candidateTransactions.where((tx) => tx['selected'] == true).toList();
-
-    if (selectedTxs.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("En az 1 işlem seçmelisin")),
-      );
+  Future<void> _decideCurrentTransaction(bool shouldAdd) async {
+    if (_isDeciding ||
+        _candidateTransactions.isEmpty ||
+        _reviewIndex >= _candidateTransactions.length ||
+        _currentUploadId == null) {
       return;
     }
 
-    setState(() => _isProcessing = true);
+    final tx = _candidateTransactions[_reviewIndex];
+    final status = shouldAdd ? 'added' : 'skipped';
+
+    setState(() => _isDeciding = true);
 
     try {
-      int successCount = 0;
-      for (final tx in selectedTxs) {
-        try {
-          await ApiService.addTransaction(
-            title: tx['title'],
-            amount: tx['amount'],
-            category: tx['category'],
-            date: tx['date'],
-          );
-          successCount++;
-        } catch (_) {}
-      }
+      await ApiService.decidePdfUploadItem(
+        uploadId: _currentUploadId!,
+        itemId: tx['id'] as int,
+        status: status,
+      );
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("$successCount işlem başarıyla eklendi")),
-        );
-        _reset();
-      }
+      setState(() {
+        tx['status'] = status;
+        if (shouldAdd) {
+          _addedCount++;
+        } else {
+          _skippedCount++;
+        }
+
+        if (_reviewIndex < _candidateTransactions.length - 1) {
+          _reviewIndex++;
+        } else {
+          _currentStep = 3;
+        }
+      });
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Import sırasında hata: $e")),
+          SnackBar(
+            content: Text(e.toString().replaceFirst("Exception: ", "")),
+          ),
         );
       }
     } finally {
-      setState(() => _isProcessing = false);
+      if (mounted) setState(() => _isDeciding = false);
     }
+  }
+
+  void _goToPreviousReview() {
+    if (_reviewIndex == 0) return;
+    setState(() {
+      _reviewIndex--;
+    });
   }
 
   void _reset() {
     setState(() {
       _currentStep = 0;
+      _reviewIndex = 0;
+      _addedCount = 0;
+      _skippedCount = 0;
+      _currentUploadId = null;
+      _uploadedFileName = '';
+      _emptyStateOverrideMessage = null;
       _candidateTransactions = [];
     });
   }
 
+  void _openHistory() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PdfHistoryScreen()),
+    );
+  }
+
   Color _categoryColor(String category) {
     final colors = {
-      'Yiyecek': const Color(0xFF1E6B52),
-      'Ulaşım': const Color(0xFFC96B3B),
-      'Konut': const Color(0xFF7B887F),
+      'Alışveriş': const Color(0xFF2E6F5E),
+      'Eğitim': const Color(0xFF4E6FAF),
       'Eğlence': const Color(0xFFB8606A),
+      'Yeme İçme': const Color(0xFF1E6B52),
+      'Ulaşım': const Color(0xFFC96B3B),
+      'Faturalar': const Color(0xFF7B887F),
       'Sağlık': const Color(0xFF6B8A7F),
       'Diğer': const Color(0xFF9B8C7E),
     };
@@ -193,12 +297,14 @@ class _UploadScreenState extends State<UploadScreen> {
 
   IconData _categoryIcon(String category) {
     final icons = {
-      'Yiyecek': Icons.restaurant_outlined,
-      'Ulaşım': Icons.directions_car_outlined,
-      'Konut': Icons.home_outlined,
+      'Alışveriş': Icons.shopping_bag_outlined,
+      'Eğitim': Icons.school_outlined,
       'Eğlence': Icons.local_movies_outlined,
+      'Yeme İçme': Icons.restaurant_outlined,
+      'Ulaşım': Icons.directions_car_outlined,
+      'Faturalar': Icons.receipt_long_outlined,
       'Sağlık': Icons.local_hospital_outlined,
-      'Diğer': Icons.shopping_bag_outlined,
+      'Diğer': Icons.category_outlined,
     };
     return icons[category] ?? Icons.category_outlined;
   }
@@ -212,10 +318,12 @@ class _UploadScreenState extends State<UploadScreen> {
         child: _isProcessing
             ? const Center(child: CircularProgressIndicator())
             : _currentStep == 0
-                ? _buildStep0(theme)
-                : _currentStep == 1
-                    ? _buildStep1(theme)
-                    : _buildStep2(theme),
+            ? _buildStep0(theme)
+            : _currentStep == 1
+            ? _buildStep1(theme)
+            : _currentStep == 2
+            ? _buildStep2(theme)
+            : _buildStep3(theme),
       ),
     );
   }
@@ -226,9 +334,25 @@ class _UploadScreenState extends State<UploadScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "Akıllı\nYükleme",
-            style: theme.textTheme.headlineLarge,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text("Akıllı\nYükleme", style: theme.textTheme.headlineLarge),
+              ),
+              IconButton(
+                onPressed: _openHistory,
+                tooltip: "PDF Geçmişi",
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFFCF6),
+                  side: const BorderSide(color: Color(0xFFE8DFD3)),
+                ),
+                icon: const Icon(
+                  Icons.folder_outlined,
+                  color: Color(0xFF1E6B52),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 10),
           Text(
@@ -244,10 +368,7 @@ class _UploadScreenState extends State<UploadScreen> {
               decoration: BoxDecoration(
                 color: const Color(0xFFFFFCF6),
                 borderRadius: BorderRadius.circular(28),
-                border: Border.all(
-                  color: const Color(0xFFE8DFD3),
-                  width: 2,
-                ),
+                border: Border.all(color: const Color(0xFFE8DFD3), width: 2),
               ),
               child: Column(
                 children: [
@@ -295,10 +416,7 @@ class _UploadScreenState extends State<UploadScreen> {
               children: [
                 const Text(
                   "📋 Desteklenen format",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                 ),
                 const SizedBox(height: 10),
                 const Text(
@@ -320,6 +438,14 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Widget _buildStep1(ThemeData theme) {
+    if (_candidateTransactions.isEmpty) {
+      return _buildStep2(theme);
+    }
+
+    final tx = _candidateTransactions[_reviewIndex];
+    final date = tx['date'] as DateTime;
+    final amount = tx['amount'] as num;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 120),
       child: Column(
@@ -337,12 +463,14 @@ class _UploadScreenState extends State<UploadScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "Adım 2/2: İşlemleri Kontrol Et",
+                      "Ekstredeki İşlemler",
                       style: theme.textTheme.titleSmall,
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      "${_candidateTransactions.where((tx) => tx['selected'] == true).length}/${_candidateTransactions.length} seçildi",
+                      "$_uploadedFileName · ${_reviewIndex + 1}/${_candidateTransactions.length} işlem",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 13,
                         color: Color(0xFF7B887F),
@@ -354,174 +482,171 @@ class _UploadScreenState extends State<UploadScreen> {
             ],
           ),
           const SizedBox(height: 24),
-          if (_candidateTransactions.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFFCF6),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: const Color(0xFFE9DED4)),
-              ),
-              child: Column(
-                children: [
-                  const Icon(
-                    Icons.inbox_outlined,
-                    size: 40,
-                    color: Color(0xFF7B887F),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    "İşlem bulunamadı",
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFCF6),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFFE8DFD3)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 20,
+                      backgroundColor: _categoryColor(
+                        tx['category'],
+                      ).withOpacity(0.12),
+                      child: Icon(
+                        _categoryIcon(tx['category']),
+                        color: _categoryColor(tx['category']),
+                        size: 20,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    "PDF'den işlem ayrıştırılamadı. Format kontrolü yap.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFF64716B),
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: () => setState(() => _currentStep = 0),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF1E6B52),
-                    ),
-                    child: const Text("Başa Dön"),
-                  ),
-                ],
-              ),
-            )
-          else
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _candidateTransactions.length,
-              itemBuilder: (context, idx) {
-                final tx = _candidateTransactions[idx];
-                final isSelected = tx['selected'] == true;
-
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _candidateTransactions[idx]['selected'] = !isSelected;
-                      });
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFFCF6),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: isSelected ? const Color(0xFF1E6B52) : const Color(0xFFE8DFD3),
-                          width: isSelected ? 2 : 1,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        tx['category'],
+                        style: TextStyle(
+                          color: _categoryColor(tx['category']),
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 20,
-                            backgroundColor: _categoryColor(tx['category']).withOpacity(0.12),
-                            child: Icon(
-                              _categoryIcon(tx['category']),
-                              color: _categoryColor(tx['category']),
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  tx['title'],
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15,
-                                    color: Color(0xFF1E2722),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  "${(tx['date'] as DateTime).day.toString().padLeft(2, '0')}.${(tx['date'] as DateTime).month.toString().padLeft(2, '0')}.${(tx['date'] as DateTime).year}",
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF7B887F),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                "₺${(tx['amount'] as num).abs().toStringAsFixed(2)}",
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 15,
-                                  color: Color(0xFFB04242),
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: _categoryColor(tx['category']).withOpacity(0.15),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Text(
-                                  tx['category'],
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: _categoryColor(tx['category']),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
+                    ),
+                    Text(
+                      "₺${amount.abs().toStringAsFixed(2)}",
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 18,
+                        color: Color(0xFFB04242),
                       ),
                     ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  tx['title'],
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E2722),
                   ),
-                );
-              },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year}",
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF7B887F),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                if (tx['status'] != 'pending')
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: (tx['status'] == 'added'
+                              ? const Color(0xFF1E6B52)
+                              : const Color(0xFF9B8C7E))
+                          .withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      tx['status'] == 'added' ? "Eklendi" : "Atlandı",
+                      style: TextStyle(
+                        color: tx['status'] == 'added'
+                            ? const Color(0xFF1E6B52)
+                            : const Color(0xFF9B8C7E),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  )
+                else
+                  const Text(
+                    "Bu işlemi eklemek istiyor musun?",
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Color(0xFF3D4A44),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+              ],
             ),
+          ),
+          const SizedBox(height: 16),
+          LinearProgressIndicator(
+            value: (_reviewIndex + 1) / _candidateTransactions.length,
+            minHeight: 8,
+            borderRadius: BorderRadius.circular(999),
+            color: const Color(0xFF1E6B52),
+            backgroundColor: const Color(0xFFE8DFD3),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Şu ana kadar $_addedCount işlem eklendi, $_skippedCount işlem atlandı.",
+            style: const TextStyle(fontSize: 12, color: Color(0xFF7B887F)),
+          ),
           const SizedBox(height: 24),
           Row(
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: () => setState(() => _currentStep = 0),
+                  onPressed: (_isDeciding || _reviewIndex == 0)
+                      ? null
+                      : _goToPreviousReview,
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: Color(0xFFE8DFD3)),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  child: const Text("İptal"),
+                  child: const Text("Önceki"),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed: _confirmImport,
+                  onPressed: _isDeciding
+                      ? null
+                      : () => _decideCurrentTransaction(false),
                   style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF1E6B52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    backgroundColor: const Color(0xFFB8606A),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  child: const Text("Ekle"),
+                  child: const Text("Atla"),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _isDeciding
+                      ? null
+                      : () => _decideCurrentTransaction(true),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E6B52),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: _isDeciding
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text("Ekle"),
                 ),
               ),
             ],
@@ -532,6 +657,73 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Widget _buildStep2(ThemeData theme) {
+    final message = _emptyStateOverrideMessage ??
+        "PDF'den işlem ayrıştırılamadı. Formatı kontrol edip tekrar dene.";
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 120),
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFFCF6),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: const Color(0xFFE9DED4)),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              _emptyStateOverrideMessage != null
+                  ? Icons.folder_copy_outlined
+                  : Icons.inbox_outlined,
+              size: 40,
+              color: const Color(0xFF7B887F),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _emptyStateOverrideMessage != null
+                  ? "Bu PDF zaten incelenmiş"
+                  : "İşlem bulunamadı",
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Color(0xFF64716B), fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (_emptyStateOverrideMessage != null) ...[
+                  OutlinedButton(
+                    onPressed: _openHistory,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFFE8DFD3)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text("Geçmişi Gör"),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+                FilledButton(
+                  onPressed: _reset,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E6B52),
+                  ),
+                  child: const Text("Yeni PDF Yükle"),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStep3(ThemeData theme) {
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 40, 20, 120),
       child: Column(
@@ -558,28 +750,55 @@ class _UploadScreenState extends State<UploadScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  "Başarılı!",
-                  style: theme.textTheme.headlineSmall,
-                ),
+                Text("İnceleme tamamlandı!", style: theme.textTheme.headlineSmall),
                 const SizedBox(height: 8),
                 Text(
-                  "İşlemler portföyüne eklendi. Dashboard'u güncellemen gerek.",
+                  "$_addedCount işlem portföyüne eklendi, $_skippedCount işlem atlandı.",
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodyMedium,
                 ),
+                if (_skippedCount > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    "Atladığın işlemleri PDF Geçmişi'nden istediğin zaman ekleyebilirsin.",
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFF7B887F),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
           const SizedBox(height: 24),
-          FilledButton(
-            onPressed: _reset,
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF1E6B52),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-            ),
-            child: const Text("Yeni Dosya Yükle"),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              OutlinedButton(
+                onPressed: _openHistory,
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFFE8DFD3)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                child: const Text("PDF Geçmişi"),
+              ),
+              const SizedBox(width: 12),
+              FilledButton(
+                onPressed: _reset,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E6B52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                child: const Text("Yeni Dosya Yükle"),
+              ),
+            ],
           ),
         ],
       ),
