@@ -4,6 +4,16 @@ import 'package:http/http.dart' as http;
 class ApiService {
   static const String baseUrl = "http://localhost:8000";
 
+  static String? _token;
+
+  static void setToken(String? token) {
+    _token = token;
+  }
+
+  static void clearToken() {
+    _token = null;
+  }
+
   static Future<Map<String, String>> _jsonHeaders() async {
     return {"Content-Type": "application/json"};
   }
@@ -13,6 +23,22 @@ class ApiService {
       "Content-Type": "application/json",
       "Authorization": "Bearer $token",
     };
+  }
+
+  static String _requireToken() {
+    final token = _token;
+    if (token == null || token.isEmpty) {
+      throw Exception("Oturum bulunamadı. Lütfen tekrar giriş yap.");
+    }
+    return token;
+  }
+
+  static Map<String, String> _currentAuthHeaders() {
+    return _authHeaders(_requireToken());
+  }
+
+  static Map<String, String> _bearerOnlyHeader() {
+    return {"Authorization": "Bearer ${_requireToken()}"};
   }
 
   static dynamic _decodeBody(http.Response response) {
@@ -87,14 +113,30 @@ class ApiService {
     throw Exception(_extractError(response));
   }
 
+  static Future<Map<String, dynamic>> getCurrentUser() async {
+    final response = await http.get(
+      Uri.parse("$baseUrl/auth/me"),
+      headers: _currentAuthHeaders(),
+    );
+
+    if (response.statusCode == 200) {
+      return (_decodeBody(response) as Map<String, dynamic>);
+    }
+
+    throw Exception(_extractError(response));
+  }
+
   static Future<List<dynamic>> getTransactions() async {
-    final response = await http.get(Uri.parse("$baseUrl/transactions"));
+    final response = await http.get(
+      Uri.parse("$baseUrl/transactions"),
+      headers: _currentAuthHeaders(),
+    );
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as List<dynamic>;
     }
 
-    throw Exception("Veri alinamadi: ${response.statusCode}");
+    throw Exception("Veri alınamadı: ${response.statusCode}");
   }
 
   static Future<Map<String, dynamic>> addTransaction({
@@ -110,7 +152,7 @@ class ApiService {
 
     final response = await http.post(
       Uri.parse("$baseUrl/transactions"),
-      headers: await _jsonHeaders(),
+      headers: _currentAuthHeaders(),
       body: jsonEncode({
         "title": title,
         "amount": amount,
@@ -123,7 +165,50 @@ class ApiService {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("Islem eklenemedi: ${response.statusCode} - ${response.body}");
+    throw Exception("İşlem eklenemedi: ${response.statusCode} - ${response.body}");
+  }
+
+  static Future<Map<String, dynamic>> updateTransaction({
+    required int id,
+    required String title,
+    required double amount,
+    required String category,
+    required DateTime date,
+  }) async {
+    final dateStr =
+        "${date.year.toString().padLeft(4, '0')}-"
+        "${date.month.toString().padLeft(2, '0')}-"
+        "${date.day.toString().padLeft(2, '0')}";
+
+    final response = await http.put(
+      Uri.parse("$baseUrl/transactions/$id"),
+      headers: _currentAuthHeaders(),
+      body: jsonEncode({
+        "title": title,
+        "amount": amount,
+        "category": category,
+        "date": dateStr,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+
+    throw Exception(_extractError(response));
+  }
+
+  static Future<void> deleteTransaction(int id) async {
+    final response = await http.delete(
+      Uri.parse("$baseUrl/transactions/$id"),
+      headers: _currentAuthHeaders(),
+    );
+
+    if (response.statusCode == 204 || response.statusCode == 200) {
+      return;
+    }
+
+    throw Exception(_extractError(response));
   }
 
   static Future<Map<String, dynamic>> uploadPdf({
@@ -134,6 +219,7 @@ class ApiService {
       "POST",
       Uri.parse("$baseUrl/upload-pdf"),
     );
+    request.headers.addAll(_bearerOnlyHeader());
 
     request.files.add(
       http.MultipartFile.fromBytes(
@@ -150,36 +236,89 @@ class ApiService {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("PDF yuklenemedi: ${response.statusCode} - ${response.body}");
+    throw Exception("PDF yüklenemedi: ${response.statusCode} - ${response.body}");
   }
 
   static Future<Map<String, dynamic>> getAnalytics() async {
-    final response = await http.get(Uri.parse("$baseUrl/analytics"));
+    final response = await http.get(
+      Uri.parse("$baseUrl/analytics"),
+      headers: _currentAuthHeaders(),
+    );
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("Analytics alinamadi");
+    throw Exception("Analitik verisi alınamadı");
   }
 
   static Future<Map<String, dynamic>> getPrediction() async {
-    final response = await http.get(Uri.parse("$baseUrl/prediction"));
+    final response = await http.get(
+      Uri.parse("$baseUrl/prediction"),
+      headers: _currentAuthHeaders(),
+    );
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("Tahmin alinamadi");
+    throw Exception("Tahmin alınamadı");
   }
 
   static Future<Map<String, dynamic>> getDashboard() async {
-    final response = await http.get(Uri.parse("$baseUrl/dashboard"));
+    final response = await http.get(
+      Uri.parse("$baseUrl/dashboard"),
+      headers: _currentAuthHeaders(),
+    );
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("Dashboard alinamadi: ${response.statusCode}");
+    throw Exception("Dashboard alınamadı: ${response.statusCode}");
+  }
+
+  static Future<List<dynamic>> getPdfUploads() async {
+    final response = await http.get(
+      Uri.parse("$baseUrl/pdf-uploads"),
+      headers: _currentAuthHeaders(),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as List<dynamic>;
+    }
+
+    throw Exception("PDF geçmişi alınamadı: ${response.statusCode}");
+  }
+
+  static Future<Map<String, dynamic>> getPdfUploadDetail(int uploadId) async {
+    final response = await http.get(
+      Uri.parse("$baseUrl/pdf-uploads/$uploadId"),
+      headers: _currentAuthHeaders(),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+
+    throw Exception("PDF detayı alınamadı: ${response.statusCode}");
+  }
+
+  static Future<Map<String, dynamic>> decidePdfUploadItem({
+    required int uploadId,
+    required int itemId,
+    required String status,
+  }) async {
+    final response = await http.post(
+      Uri.parse("$baseUrl/pdf-uploads/$uploadId/items/$itemId/decide"),
+      headers: _currentAuthHeaders(),
+      body: jsonEncode({"status": status}),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+
+    throw Exception(_extractError(response));
   }
 }

@@ -139,6 +139,8 @@ class _AppEntryPointState extends State<_AppEntryPoint> {
       }
     }
 
+    ApiService.setToken(validToken);
+
     if (!mounted) return;
     setState(() {
       _hasSeenOnboarding = hasSeenOnboarding;
@@ -160,10 +162,22 @@ class _AppEntryPointState extends State<_AppEntryPoint> {
   Future<void> _onAuthenticated(String token) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(tokenKey, token);
+    ApiService.setToken(token);
 
     if (!mounted) return;
     setState(() {
       _token = token;
+    });
+  }
+
+  Future<void> _onLogout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(tokenKey);
+    ApiService.clearToken();
+
+    if (!mounted) return;
+    setState(() {
+      _token = null;
     });
   }
 
@@ -183,7 +197,7 @@ class _AppEntryPointState extends State<_AppEntryPoint> {
       return AuthScreen(onAuthenticated: _onAuthenticated);
     }
 
-    return const MainScreen();
+    return MainScreen(onLogout: _onLogout);
   }
 }
 
@@ -214,12 +228,43 @@ class _AuthScreenState extends State<AuthScreen> {
 
   void _showMessage(String text, {bool error = true}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(text),
-        backgroundColor: error ? Colors.red.shade600 : Colors.green.shade700,
-      ),
-    );
+    final accent = error ? const Color(0xFFB04242) : const Color(0xFF1E6B52);
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: accent,
+          elevation: 0,
+          duration: const Duration(seconds: 3),
+          margin: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          content: Row(
+            children: [
+              Icon(
+                error
+                    ? Icons.error_outline_rounded
+                    : Icons.check_circle_outline_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  text,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
   }
 
   Future<void> _submit() async {
@@ -228,7 +273,7 @@ class _AuthScreenState extends State<AuthScreen> {
     final name = _nameController.text.trim();
 
     if (email.isEmpty || password.isEmpty) {
-      _showMessage("E-posta ve sifre zorunludur");
+      _showMessage("E-posta ve şifre zorunludur");
       return;
     }
 
@@ -238,7 +283,7 @@ class _AuthScreenState extends State<AuthScreen> {
     }
 
     if (password.length < 8) {
-      _showMessage("Sifre en az 8 karakter olmali");
+      _showMessage("Şifre en az 8 karakter olmalı");
       return;
     }
 
@@ -264,11 +309,11 @@ class _AuthScreenState extends State<AuthScreen> {
 
       final token = (response["access_token"] ?? "").toString();
       if (token.isEmpty) {
-        throw Exception("Token alinamadi");
+        throw Exception("Token alınamadı");
       }
 
       await widget.onAuthenticated(token);
-      _showMessage("Giris basarili", error: false);
+      _showMessage("Giriş başarılı", error: false);
     } catch (e) {
       _showMessage(e.toString().replaceFirst("Exception: ", ""));
     } finally {
@@ -317,12 +362,12 @@ class _AuthScreenState extends State<AuthScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        _isLogin ? "Giris Yap" : "Kayit Ol",
+                        _isLogin ? "Giriş Yap" : "Kayıt Ol",
                         style: theme.textTheme.headlineMedium,
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        "Finansal paneline devam etmek icin hesap olustur veya giris yap.",
+                        "Finansal paneline devam etmek için hesap oluştur veya giriş yap.",
                         style: theme.textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 20),
@@ -353,7 +398,7 @@ class _AuthScreenState extends State<AuthScreen> {
                         textInputAction: TextInputAction.done,
                         onSubmitted: (_) => _submit(),
                         decoration: const InputDecoration(
-                          labelText: "Sifre",
+                          labelText: "Şifre",
                           border: OutlineInputBorder(),
                         ),
                       ),
@@ -379,7 +424,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                     color: Colors.white,
                                   ),
                                 )
-                              : Text(_isLogin ? "Giris Yap" : "Kayit Ol"),
+                              : Text(_isLogin ? "Giriş Yap" : "Kayıt Ol"),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -395,8 +440,8 @@ class _AuthScreenState extends State<AuthScreen> {
                                 },
                           child: Text(
                             _isLogin
-                                ? "Hesabin yok mu? Kayit ol"
-                                : "Zaten hesabin var mi? Giris yap",
+                                ? "Hesabın yok mu? Kayıt ol"
+                                : "Zaten hesabın var mı? Giriş yap",
                           ),
                         ),
                       ),

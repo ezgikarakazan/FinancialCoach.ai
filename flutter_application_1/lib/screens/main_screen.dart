@@ -7,7 +7,9 @@ import 'prediction_screen.dart';
 import 'profile_screen.dart';
 
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final Future<void> Function() onLogout;
+
+  const MainScreen({super.key, required this.onLogout});
 
   @override
   State<MainScreen> createState() => _MainScreenState();
@@ -17,17 +19,17 @@ class _MainScreenState extends State<MainScreen> {
 
   int currentIndex = 0;
 
-  final List<Widget> pages = const [
-    DashboardScreen(),
-    UploadScreen(),
-    TransactionsScreen(),
-    AnalyticsScreen(),
-    PredictionScreen(),
-    ProfilScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final pages = [
+      const DashboardScreen(),
+      const UploadScreen(),
+      const TransactionsScreen(),
+      const AnalyticsScreen(),
+      const PredictionScreen(),
+      ProfilScreen(onLogout: widget.onLogout),
+    ];
+
     return Scaffold(
       body: pages[currentIndex],
 
