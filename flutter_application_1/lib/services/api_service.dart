@@ -2,7 +2,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String baseUrl = "http://localhost:8000";
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://localhost:8000',
+  );
 
   static String? _token;
 
@@ -64,11 +67,7 @@ class ApiService {
     final response = await http.post(
       Uri.parse("$baseUrl/auth/register"),
       headers: await _jsonHeaders(),
-      body: jsonEncode({
-        "name": name,
-        "email": email,
-        "password": password,
-      }),
+      body: jsonEncode({"name": name, "email": email, "password": password}),
     );
 
     if (response.statusCode == 201) {
@@ -85,10 +84,7 @@ class ApiService {
     final response = await http.post(
       Uri.parse("$baseUrl/auth/login"),
       headers: await _jsonHeaders(),
-      body: jsonEncode({
-        "email": email,
-        "password": password,
-      }),
+      body: jsonEncode({"email": email, "password": password}),
     );
 
     if (response.statusCode == 200) {
@@ -98,9 +94,7 @@ class ApiService {
     throw Exception(_extractError(response));
   }
 
-  static Future<Map<String, dynamic>> getMe({
-    required String token,
-  }) async {
+  static Future<Map<String, dynamic>> getMe({required String token}) async {
     final response = await http.get(
       Uri.parse("$baseUrl/auth/me"),
       headers: _authHeaders(token),
@@ -165,7 +159,9 @@ class ApiService {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("İşlem eklenemedi: ${response.statusCode} - ${response.body}");
+    throw Exception(
+      "İşlem eklenemedi: ${response.statusCode} - ${response.body}",
+    );
   }
 
   static Future<Map<String, dynamic>> updateTransaction({
@@ -214,19 +210,19 @@ class ApiService {
   static Future<Map<String, dynamic>> uploadPdf({
     required List<int> bytes,
     required String fileName,
+    String statementType = 'bank',
+    String institutionName = '',
   }) async {
     final request = http.MultipartRequest(
       "POST",
       Uri.parse("$baseUrl/upload-pdf"),
     );
     request.headers.addAll(_bearerOnlyHeader());
+    request.fields['statement_type'] = statementType;
+    request.fields['institution_name'] = institutionName;
 
     request.files.add(
-      http.MultipartFile.fromBytes(
-        "file",
-        bytes,
-        filename: fileName,
-      ),
+      http.MultipartFile.fromBytes("file", bytes, filename: fileName),
     );
 
     final streamedResponse = await request.send();
@@ -236,7 +232,9 @@ class ApiService {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    throw Exception("PDF yüklenemedi: ${response.statusCode} - ${response.body}");
+    throw Exception(
+      "PDF yüklenemedi: ${response.statusCode} - ${response.body}",
+    );
   }
 
   static Future<Map<String, dynamic>> getAnalytics() async {
@@ -308,11 +306,19 @@ class ApiService {
     required int uploadId,
     required int itemId,
     required String status,
+    String? title,
+    String? category,
+    String? sourceType,
   }) async {
     final response = await http.post(
       Uri.parse("$baseUrl/pdf-uploads/$uploadId/items/$itemId/decide"),
       headers: _currentAuthHeaders(),
-      body: jsonEncode({"status": status}),
+      body: jsonEncode({
+        "status": status,
+        if (title != null) "title": title,
+        if (category != null) "category": category,
+        if (sourceType != null) "source_type": sourceType,
+      }),
     );
 
     if (response.statusCode == 200) {

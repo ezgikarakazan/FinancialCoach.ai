@@ -12,3 +12,6 @@ class Transaction(Base):
     amount = Column(Numeric(12, 2), nullable=False)  # Para için Decimal
     category = Column(String(100), nullable=False)
     date = Column(Date, nullable=False)
+    source_type = Column(String(20), nullable=False, default="bank", server_default="bank")
+    transaction_type = Column(String(30), nullable=False, default="expense", server_default="expense")
+    institution_name = Column(String(120), nullable=False, default="Bilinmiyor", server_default="Bilinmiyor")

@@ -132,7 +132,9 @@ class _AppEntryPointState extends State<_AppEntryPoint> {
     String? validToken;
     if (savedToken != null && savedToken.isNotEmpty) {
       try {
-        await ApiService.getMe(token: savedToken);
+        await ApiService.getMe(token: savedToken).timeout(
+          const Duration(seconds: 5),
+        );
         validToken = savedToken;
       } catch (_) {
         await prefs.remove(tokenKey);

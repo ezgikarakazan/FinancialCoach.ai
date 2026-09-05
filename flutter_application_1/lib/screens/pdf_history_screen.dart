@@ -62,7 +62,10 @@ class _PdfHistoryScreenState extends State<PdfHistoryScreen> {
                     const SizedBox(height: 12),
                     const Text(
                       "Geçmiş yüklenemedi",
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 16),
                     FilledButton(
@@ -95,7 +98,10 @@ class _PdfHistoryScreenState extends State<PdfHistoryScreen> {
                     const SizedBox(height: 14),
                     const Text(
                       "Henüz PDF yüklemedin",
-                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     const Text(
@@ -164,7 +170,8 @@ class _PdfHistoryScreenState extends State<PdfHistoryScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  upload['filename']?.toString() ?? 'Bilinmeyen dosya',
+                                  upload['filename']?.toString() ??
+                                      'Bilinmeyen dosya',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -174,7 +181,9 @@ class _PdfHistoryScreenState extends State<PdfHistoryScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  _formatDate(upload['uploaded_at']?.toString() ?? ''),
+                                  _formatDate(
+                                    upload['uploaded_at']?.toString() ?? '',
+                                  ),
                                   style: const TextStyle(
                                     fontSize: 12,
                                     color: Color(0xFF7B887F),
@@ -290,30 +299,83 @@ class _PdfUploadDetailScreenState extends State<PdfUploadDetailScreen> {
   }
 
   Future<void> _addItem(int itemId) async {
+    final item = await _findItem(itemId);
+    if (item == null) return;
+
+    final sourceType = await _chooseSourceType(
+      item['source_type']?.toString() ?? 'bank',
+    );
+    if (sourceType == null) return;
+
     setState(() => _busyItemIds.add(itemId));
     try {
       await ApiService.decidePdfUploadItem(
         uploadId: widget.uploadId,
         itemId: itemId,
         status: "added",
+        sourceType: sourceType,
       );
       _refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("İşlem eklendi")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("İşlem eklendi")));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e.toString().replaceFirst("Exception: ", "")),
-          ),
+          SnackBar(content: Text(e.toString().replaceFirst("Exception: ", ""))),
         );
       }
     } finally {
       if (mounted) setState(() => _busyItemIds.remove(itemId));
     }
+  }
+
+  Future<Map<String, dynamic>?> _findItem(int itemId) async {
+    final detail = await _detailFuture;
+    final items = detail['items'] as List<dynamic>? ?? [];
+    for (final rawItem in items) {
+      final item = rawItem as Map<String, dynamic>;
+      if (item['id'] == itemId) return item;
+    }
+    return null;
+  }
+
+  Future<String?> _chooseSourceType(String currentSourceType) {
+    var selected = currentSourceType == 'credit_card' ? 'credit_card' : 'bank';
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Nereye eklensin?'),
+          content: DropdownButtonFormField<String>(
+            initialValue: selected,
+            decoration: const InputDecoration(labelText: 'Hesap türü'),
+            items: const [
+              DropdownMenuItem(value: 'bank', child: Text('Banka hesabı')),
+              DropdownMenuItem(
+                value: 'credit_card',
+                child: Text('Kredi kartı'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) setDialogState(() => selected = value);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Vazgeç'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, selected),
+              child: const Text('Ekle'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _removeItem(int itemId) async {
@@ -331,7 +393,9 @@ class _PdfUploadDetailScreenState extends State<PdfUploadDetailScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFB04242)),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB04242),
+            ),
             child: const Text("Çıkar"),
           ),
         ],
@@ -349,16 +413,14 @@ class _PdfUploadDetailScreenState extends State<PdfUploadDetailScreen> {
       );
       _refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("İşlem çıkarıldı")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("İşlem çıkarıldı")));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e.toString().replaceFirst("Exception: ", "")),
-          ),
+          SnackBar(content: Text(e.toString().replaceFirst("Exception: ", ""))),
         );
       }
     } finally {
@@ -467,7 +529,9 @@ class _PdfUploadDetailScreenState extends State<PdfUploadDetailScreen> {
                                     vertical: 3,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: _statusColor(status).withOpacity(0.12),
+                                    color: _statusColor(
+                                      status,
+                                    ).withOpacity(0.12),
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                   child: Text(
@@ -523,7 +587,9 @@ class _PdfUploadDetailScreenState extends State<PdfUploadDetailScreen> {
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(10),
                               ),
-                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                              ),
                             ),
                             child: isBusy
                                 ? const SizedBox(
@@ -548,7 +614,9 @@ class _PdfUploadDetailScreenState extends State<PdfUploadDetailScreen> {
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(10),
                               ),
-                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                              ),
                             ),
                             child: isBusy
                                 ? const SizedBox(

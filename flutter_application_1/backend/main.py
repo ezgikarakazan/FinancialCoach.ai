@@ -7,9 +7,10 @@ import hashlib
 import os
 import re
 import secrets
+import statistics
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -21,6 +22,9 @@ from sqlalchemy.orm import Session
 from database import (
     SessionLocal,
     engine,
+    ensure_pdf_upload_statement_type_columns,
+    ensure_transaction_source_type_column,
+    ensure_transaction_classification_columns,
     ensure_transaction_user_id_column,
     ensure_user_login_security_columns,
 )
@@ -39,6 +43,9 @@ app = FastAPI(
 Base.metadata.create_all(bind=engine)
 ensure_transaction_user_id_column()
 ensure_user_login_security_columns()
+ensure_transaction_source_type_column()
+ensure_transaction_classification_columns()
+ensure_pdf_upload_statement_type_columns()
 
 app.add_middleware(
     CORSMiddleware,
@@ -139,6 +146,9 @@ class TransactionCreate(BaseModel):
     amount: Decimal
     category: str
     date: date
+    source_type: str = "bank"
+    transaction_type: str | None = None
+    institution_name: str | None = None
 
 
 class TransactionOut(BaseModel):
@@ -147,6 +157,9 @@ class TransactionOut(BaseModel):
     amount: Decimal
     category: str
     date: date
+    source_type: str
+    transaction_type: str
+    institution_name: str
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -182,6 +195,8 @@ class PdfUploadItemOut(BaseModel):
     title: str
     amount: Decimal
     category: str
+    source_type: str
+    transaction_type: str
     status: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -195,6 +210,7 @@ class PdfUploadSummary(BaseModel):
     added_count: int
     skipped_count: int
     pending_count: int
+    institution_name: str
 
 
 class PdfUploadDetail(BaseModel):
@@ -202,10 +218,60 @@ class PdfUploadDetail(BaseModel):
     filename: str
     uploaded_at: datetime
     items: List[PdfUploadItemOut]
+    institution_name: str
 
 
 class PdfUploadItemDecision(BaseModel):
     status: str
+    title: str | None = None
+    category: str | None = None
+    source_type: str | None = None
+
+
+VALID_TRANSACTION_TYPES = {
+    "income",
+    "expense",
+    "transfer",
+    "credit_card_payment",
+    "refund",
+}
+
+
+def _normalize_transaction_type(value: str | None, title: str, amount: float) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in VALID_TRANSACTION_TYPES:
+        return normalized
+    label = (title or "").lower()
+    if any(keyword in label for keyword in ("kredi kartı ödemesi", "kredi karti odemesi", "kredi kartı ödeme", "kredi karti odeme")):
+        return "credit_card_payment"
+    if any(keyword in label for keyword in ("giden transfer", "havale", "eft", "virman")):
+        return "transfer"
+    if amount > 0:
+        return "income"
+    return "expense"
+
+
+def _detect_institution_name(text: str, fallback: str | None = None) -> str:
+    known_institutions = (
+        "Garanti BBVA",
+        "İş Bankası",
+        "Yapı Kredi",
+        "Akbank",
+        "Ziraat Bankası",
+        "Halkbank",
+        "VakıfBank",
+        "QNB Finansbank",
+        "DenizBank",
+        "TEB",
+        "ING",
+        "Enpara",
+    )
+    haystack = (text or "").lower()
+    for institution in known_institutions:
+        if institution.lower() in haystack:
+            return institution
+    normalized_fallback = (fallback or "").strip()
+    return normalized_fallback or "Bilinmiyor"
 
 
 MONTH_NAMES_TR = {
@@ -340,6 +406,35 @@ def _guess_category(title: str) -> str:
     return "Diğer"
 
 
+def _is_summary_like_transaction(title: str, amount: float | None = None) -> bool:
+    cleaned = " ".join((title or "").split()).strip().lower()
+    if not cleaned:
+        return False
+
+    summary_keywords = (
+        "kullanılabilir kart limiti",
+        "kullanabilir kart limiti",
+        "kart limiti",
+        "ekstre borcu",
+        "önceki ekstre",
+        "onceki ekstre",
+        "bakiye",
+        "toplam",
+        "kullanılabilir limit",
+        "kullanabilir limit",
+        "son durum",
+        "güncel bakiye",
+        "guncel bakiye",
+    )
+    if any(keyword in cleaned for keyword in summary_keywords):
+        return True
+
+    if amount is not None and amount > 0 and ("limit" in cleaned or "bakiye" in cleaned):
+        return True
+
+    return False
+
+
 def _build_transaction(tx_date: date, title: str, amount: float) -> dict[str, Any]:
     normalized_title = " ".join((title or "").split()).strip()
     # OCR gürültüsünden kalan 1-2 karakterlik anlamsız parçalar ("we", "sd" gibi)
@@ -358,27 +453,41 @@ def parse_transactions_from_text(text: str) -> List[dict[str, Any]]:
     results: List[dict[str, Any]] = []
     seen: set[tuple[str, str, float]] = set()
 
-    line_pattern = re.compile(
-        r"^(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})\s+(.+?)\s+(?:TL|TRY|USD|EUR|GBP)?\s*([\-+]?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))(?:\s+[\-+]?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))?$"
-    )
-
     for raw_line in (text or "").splitlines():
         line = " ".join(raw_line.split()).strip()
         if not line:
             continue
 
-        match = line_pattern.match(line)
-        if not match:
+        tokens = line.split()
+        if len(tokens) < 3:
             continue
 
-        tx_date = _parse_statement_date(match.group(1))
-        amount = _parse_statement_amount(match.group(3))
-        title = match.group(2).strip()
-
-        if tx_date is None or amount is None:
+        tx_date = _parse_statement_date(tokens[0])
+        if tx_date is None:
             continue
 
-        item = _build_transaction(tx_date, title, amount)
+        amount_idx = -1
+        amount_value = None
+        for idx in range(1, len(tokens)):
+            candidate = tokens[idx].strip("()[]{}<>:,;")
+            parsed = _parse_statement_amount(candidate)
+            if parsed is not None:
+                amount_idx = idx
+                amount_value = parsed
+                break
+
+        if amount_idx == -1 or amount_value is None:
+            continue
+
+        title_tokens = tokens[1:amount_idx]
+        title = " ".join(title_tokens).strip()
+        if not title:
+            title = "Ekstre İşlemi"
+
+        item = _build_transaction(tx_date, title, amount_value)
+        if _is_summary_like_transaction(item["title"], item["amount"]):
+            continue
+
         key = (item["date"], item["title"], item["amount"])
         if key in seen:
             continue
@@ -459,7 +568,10 @@ def _extract_transactions_from_words(words: list, row_bucket: float) -> List[dic
             title_parts = title_parts[-_TITLE_TOKEN_LIMIT:]
         title = " ".join(title_parts).strip() or "Ekstre İşlemi"
 
-        results.append(_build_transaction(tx_date, title, amount))
+        item = _build_transaction(tx_date, title, amount)
+        if _is_summary_like_transaction(item["title"], item["amount"]):
+            continue
+        results.append(item)
 
     return results
 
@@ -474,6 +586,154 @@ def _dedupe_transactions(items: List[dict[str, Any]]) -> List[dict[str, Any]]:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _infer_bank_transaction_sign(title: str, amount: float) -> float:
+    label = (title or "").lower()
+    negative_keywords = [
+        "gider",
+        "ödeme",
+        "odeme",
+        "harcama",
+        "taksit",
+        "kredi karti",
+        "kredi kartı",
+        "fatura",
+        "aidat",
+        "kira",
+        "döviz",
+        "doviz",
+        "alışveriş",
+        "alisveris",
+        "market",
+        "telefon",
+        "internet",
+        "elektrik",
+        "su",
+        "yakıt",
+        "yakit",
+        "taksi",
+        "restaurant",
+        "kafe",
+        "cafe",
+        "yemek",
+        "burger",
+        "sinema",
+        "netflix",
+        "spotify",
+        "kebap",
+        "coffee",
+        "cadd",
+        "cadde",
+        "sarayi",
+        "restaurant",
+        "gida",
+        "petrol",
+        "oteller",
+        "otel",
+        "magaza",
+        "shop",
+        "store",
+    ]
+    positive_keywords = [
+        "gelir",
+        "gelen transfer",
+        "maaş",
+        "maas",
+        "deposit",
+        "iade",
+        "refund",
+        "credit",
+        "gelir transfer",
+        "maas transfer",
+        "gelen para",
+    ]
+
+    if amount < 0:
+        return amount
+
+    has_negative = any(keyword in label for keyword in negative_keywords)
+    has_positive = any(keyword in label for keyword in positive_keywords)
+
+    if has_negative and not has_positive:
+        return round(-abs(amount), 2)
+    if has_positive and not has_negative:
+        return round(abs(amount), 2)
+
+    # Açık gelir işareti yoksa, banka/market/restaurant gibi işleme ait pozitif tutar
+    # harcama olarak işlenmelidir. Böylece "müşteri transferi" veya detaylı metinlerde
+    # tek başına pozitif değerler yanlışlıkla gelir olarak görünmez.
+    merchant_like = any(
+        marker in label
+        for marker in (
+            "market",
+            "restaurant",
+            "kebap",
+            "cafe",
+            "coffee",
+            "cadde",
+            "sarayi",
+            "gida",
+            "shop",
+            "store",
+            "istanbul",
+            "tr",
+            "ltd",
+            "a.ş",
+            "as",
+        )
+    )
+    if merchant_like or not has_positive and not has_negative:
+        return round(-abs(amount), 2)
+
+    return round(amount, 2)
+
+
+def _normalize_statement_signs(items: List[dict[str, Any]], statement_type: str) -> List[dict[str, Any]]:
+    normalized_type = (statement_type or "bank").strip().lower()
+    if normalized_type not in {"bank", "credit_card"}:
+        normalized_type = "bank"
+
+    for item in items:
+        amount = float(item.get("amount", 0) or 0)
+        if normalized_type == "credit_card":
+            item["amount"] = round(-abs(amount), 2)
+        else:
+            item["amount"] = _infer_bank_transaction_sign(str(item.get("title", "")), amount)
+    return items
+
+
+def _detect_statement_type(text: str) -> str | None:
+    normalized = " ".join((text or "").lower().split())
+    credit_card_markers = (
+        "kredi kartı", "kredi karti", "credit card", "ekstre borcu",
+        "dönem borcu", "donem borcu", "asgari ödeme", "asgari odeme",
+        "kart limiti", "kullanılabilir kart limiti", "kullanabilir kart limiti",
+    )
+    bank_markers = (
+        "hesap hareketleri", "hesap ekstresi", "hesap özeti", "hesap ozeti",
+        "iban", "gelen havale", "giden havale", "eft", "havale",
+    )
+
+    credit_score = sum(marker in normalized for marker in credit_card_markers)
+    bank_score = sum(marker in normalized for marker in bank_markers)
+    if credit_score == 0 and bank_score == 0:
+        return None
+    return "credit_card" if credit_score > bank_score else "bank"
+
+
+def _validate_statement_type(selected_type: str, detected_type: str | None) -> None:
+    if detected_type is None or selected_type == detected_type:
+        return
+
+    labels = {"bank": "banka ekstresi", "credit_card": "kredi kartı ekstresi"}
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Bu PDF {labels[detected_type]} gibi görünüyor. "
+            f'Lütfen "{labels[detected_type]}" seçeneğini seçip tekrar yükle.'
+        ),
+    )
 
 
 def parse_transactions_by_words(file_path: str) -> List[dict[str, Any]]:
@@ -649,6 +909,8 @@ def dashboard(
     for item in items:
         amount_value = float(item.amount or 0)
 
+        if item.transaction_type in {"transfer", "credit_card_payment"}:
+            continue
         if amount_value > 0:
             income += amount_value
         elif amount_value < 0:
@@ -661,6 +923,9 @@ def dashboard(
                 "amount": amount_value,
                 "category": item.category,
                 "date": item.date.isoformat() if item.date else None,
+                "source_type": item.source_type,
+                "transaction_type": item.transaction_type,
+                "institution_name": item.institution_name,
             }
         )
 
@@ -697,6 +962,8 @@ def _serialize_pdf_item(item: PdfUploadItem) -> dict[str, Any]:
         "title": item.title,
         "amount": float(item.amount),
         "category": item.category,
+        "source_type": item.source_type or "bank",
+        "transaction_type": item.transaction_type or "expense",
         "status": item.status,
     }
 
@@ -704,9 +971,15 @@ def _serialize_pdf_item(item: PdfUploadItem) -> dict[str, Any]:
 @app.post("/upload-pdf")
 async def upload_pdf(
     file: UploadFile = File(...),
+    statement_type: str = Form("bank"),
+    institution_name: str = Form(""),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    statement_type = (statement_type or "bank").strip().lower()
+    if statement_type not in {"bank", "credit_card"}:
+        raise HTTPException(status_code=400, detail="Geçersiz ekstre tipi")
+
     original_name = os.path.basename(file.filename or "")
     if not original_name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Sadece PDF dosyaları kabul edilir")
@@ -745,8 +1018,42 @@ async def upload_pdf(
         )
 
         if existing_upload is not None:
-            # Aynı içerik daha önce yüklenmiş: yeniden işlemeden önceki sonucu döndür.
-            os.remove(file_path)
+            # Aynı içerik daha önce yüklenmiş olabilir. Eski sürümde yanlış türle
+            # kaydedilmiş kayıtları düzeltmek için PDF içeriğini yeniden doğrula.
+            existing_text = ""
+            try:
+                existing_text = extract_pdf_text(file_path)
+                if not existing_text.strip():
+                    existing_text = extract_pdf_text_with_ocr(file_path)
+            except Exception:
+                existing_text = ""
+            finally:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+
+            detected_existing_type = _detect_statement_type(existing_text)
+            if detected_existing_type is not None:
+                _validate_statement_type(statement_type, detected_existing_type)
+            else:
+                _validate_statement_type(
+                    statement_type,
+                    existing_upload.statement_type or "bank",
+                )
+
+            if existing_upload.statement_type != statement_type:
+                existing_upload.statement_type = statement_type
+                for item in existing_upload.items:
+                    item.source_type = statement_type
+                    if item.transaction_id is not None:
+                        linked_transaction = db.get(Transaction, item.transaction_id)
+                        if linked_transaction is not None:
+                            linked_transaction.source_type = statement_type
+                db.commit()
+
+            _validate_statement_type(
+                statement_type,
+                detected_existing_type or existing_upload.statement_type or "bank",
+            )
             items = [_serialize_pdf_item(item) for item in existing_upload.items]
             return {
                 "success": True,
@@ -757,6 +1064,7 @@ async def upload_pdf(
                 "warnings": [],
                 "parsed_transactions": items,
                 "parsed_count": len(items),
+                "institution_name": existing_upload.institution_name or "Bilinmiyor",
             }
 
         warnings: List[str] = []
@@ -797,10 +1105,16 @@ async def upload_pdf(
             except Exception as exc:
                 warnings.append(f"Metin ayrıştırma kullanılamadı: {exc}")
 
+        _validate_statement_type(statement_type, _detect_statement_type(text))
+        parsed_transactions = _normalize_statement_signs(parsed_transactions, statement_type)
+        detected_institution = _detect_institution_name(text, institution_name)
+
         upload = PdfUpload(
             user_id=current_user.id,
             filename=original_name,
             file_hash=content_hash,
+            statement_type=statement_type,
+                    institution_name=detected_institution,
         )
         for candidate in parsed_transactions:
             upload.items.append(
@@ -809,6 +1123,12 @@ async def upload_pdf(
                     title=candidate["title"],
                     amount=candidate["amount"],
                     category=candidate["category"],
+                    source_type=statement_type,
+                    transaction_type=_normalize_transaction_type(
+                        None,
+                        candidate["title"],
+                        float(candidate["amount"]),
+                    ),
                     status="pending",
                 )
             )
@@ -830,6 +1150,7 @@ async def upload_pdf(
             "warnings": warnings,
             "parsed_transactions": items,
             "parsed_count": len(items),
+            "institution_name": detected_institution,
         }
 
     except HTTPException:
@@ -877,6 +1198,7 @@ def list_pdf_uploads(
                 added_count=statuses.count("added"),
                 skipped_count=statuses.count("skipped"),
                 pending_count=statuses.count("pending"),
+                institution_name=upload.institution_name or "Bilinmiyor",
             )
         )
     return summaries
@@ -893,6 +1215,7 @@ def get_pdf_upload(
         id=upload.id,
         filename=upload.filename,
         uploaded_at=upload.uploaded_at,
+        institution_name=upload.institution_name or "Bilinmiyor",
         items=list(upload.items),
     )
 
@@ -908,6 +1231,10 @@ def decide_pdf_upload_item(
     if payload.status not in ("added", "skipped"):
         raise HTTPException(status_code=400, detail="Gecersiz durum degeri")
 
+    normalized_source = (payload.source_type or "").strip().lower()
+    if normalized_source and normalized_source not in {"bank", "credit_card"}:
+        raise HTTPException(status_code=400, detail="Geçersiz kaynak tipi")
+
     upload = _get_owned_upload(db, current_user, upload_id)
     item = next((candidate for candidate in upload.items if candidate.id == item_id), None)
     if item is None:
@@ -915,7 +1242,33 @@ def decide_pdf_upload_item(
 
     if payload.status == "added":
         if item.status == "added":
-            raise HTTPException(status_code=409, detail="Bu işlem zaten eklenmiş")
+            linked_transaction = db.get(Transaction, item.transaction_id) if item.transaction_id else None
+            if payload.title is not None and payload.title.strip():
+                item.title = payload.title.strip()
+                if linked_transaction is not None:
+                    linked_transaction.title = item.title
+            if payload.category is not None and payload.category.strip():
+                item.category = payload.category.strip()
+                if linked_transaction is not None:
+                    linked_transaction.category = item.category
+            if normalized_source:
+                item.source_type = normalized_source
+                if linked_transaction is not None:
+                    linked_transaction.source_type = normalized_source
+            db.commit()
+            db.refresh(item)
+            return item
+
+        if payload.title is not None:
+            normalized_title = payload.title.strip()
+            if normalized_title:
+                item.title = normalized_title
+        if payload.category is not None:
+            normalized_category = payload.category.strip()
+            if normalized_category:
+                item.category = normalized_category
+        if normalized_source:
+            item.source_type = normalized_source
 
         new_transaction = Transaction(
             user_id=current_user.id,
@@ -923,6 +1276,9 @@ def decide_pdf_upload_item(
             amount=item.amount,
             category=item.category,
             date=item.date,
+            source_type=item.source_type or "bank",
+            transaction_type=item.transaction_type or "expense",
+            institution_name=upload.institution_name or "Bilinmiyor",
         )
         db.add(new_transaction)
         db.flush()
@@ -963,12 +1319,23 @@ def create_transaction(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    normalized_source = (payload.source_type or "bank").strip().lower()
+    if normalized_source not in {"bank", "credit_card"}:
+        raise HTTPException(status_code=400, detail="Geçersiz kaynak tipi")
+
     new_item = Transaction(
         title=payload.title,
         amount=payload.amount,
         category=payload.category,
         date=payload.date,
         user_id=current_user.id,
+        source_type=normalized_source,
+            transaction_type=_normalize_transaction_type(
+                payload.transaction_type,
+                payload.title,
+                float(payload.amount),
+            ),
+            institution_name=(payload.institution_name or "Bilinmiyor").strip() or "Bilinmiyor",
     )
     db.add(new_item)
     db.commit()
@@ -991,10 +1358,21 @@ def update_transaction(
     if item is None:
         raise HTTPException(status_code=404, detail="İşlem bulunamadı")
 
+    normalized_source = (payload.source_type or "bank").strip().lower()
+    if normalized_source not in {"bank", "credit_card"}:
+        raise HTTPException(status_code=400, detail="Geçersiz kaynak tipi")
+
     item.title = payload.title
     item.amount = payload.amount
     item.category = payload.category
     item.date = payload.date
+    item.source_type = normalized_source
+    item.transaction_type = _normalize_transaction_type(
+        payload.transaction_type,
+        payload.title,
+        float(payload.amount),
+    )
+    item.institution_name = (payload.institution_name or "Bilinmiyor").strip() or "Bilinmiyor"
 
     db.commit()
     db.refresh(item)
@@ -1049,7 +1427,7 @@ def analytics(
     for item in items:
         amount = float(item.amount or 0)
 
-        if amount >= 0:
+        if amount >= 0 or item.transaction_type in {"transfer", "credit_card_payment"}:
             continue
 
         expense = abs(amount)
@@ -1080,6 +1458,68 @@ def analytics(
     }
 
 
+def _calculate_monthly_forecast(monthly_totals: dict[str, float]) -> dict[str, float | int | str]:
+    if not monthly_totals:
+        return {
+            "predicted_expense": 0,
+            "confidence": 0,
+            "message": "Henüz yeterli gider verisi yok. Tahmin oluşturmak için işlem eklemelisin.",
+        }
+
+    ordered_months = sorted(monthly_totals.items())
+    values = [float(amount) for _, amount in ordered_months]
+
+    if len(values) == 1:
+        predicted = values[0]
+        return {
+            "predicted_expense": round(predicted, 2),
+            "confidence": 40,
+            "message": "Tek aylık veri mevcut. Gelecek ay giderler benzer düzeyde devam edebilir.",
+        }
+
+    recent_values = values[-min(len(values), 6):]
+    weights = list(range(1, len(recent_values) + 1))
+    weighted_average = sum(value * weight for value, weight in zip(recent_values, weights)) / sum(weights)
+
+    baseline = weighted_average
+    slope = (recent_values[-1] - recent_values[0]) / max(len(recent_values) - 1, 1)
+    avg_level = sum(recent_values) / len(recent_values)
+    trend_factor = 1 + (slope / max(avg_level, 1)) * 0.8
+
+    predicted = max(baseline * min(max(trend_factor, 0.7), 1.35), 0)
+
+    if len(values) >= 6:
+        confidence = 88
+    elif len(values) >= 4:
+        confidence = 78
+    elif len(values) >= 3:
+        confidence = 66
+    else:
+        confidence = 52
+
+    volatility = statistics.pstdev(recent_values)
+    if avg_level > 0 and volatility > (avg_level * 0.5):
+        confidence = max(confidence - 15, 35)
+
+    if recent_values[-1] > recent_values[0]:
+        direction = "artıyor"
+    elif recent_values[-1] < recent_values[0]:
+        direction = "azalıyor"
+    else:
+        direction = "sakin"
+
+    message = (
+        f"Son {len(recent_values)} ay verisine göre gelecek ay giderler {direction}. "
+        f"Tahmini aylık harcama yaklaşık {predicted:.2f} TL."
+    )
+
+    return {
+        "predicted_expense": round(predicted, 2),
+        "confidence": int(confidence),
+        "message": message,
+    }
+
+
 @app.get("/prediction")
 def prediction(
     db: Session = Depends(get_db),
@@ -1097,43 +1537,10 @@ def prediction(
     for item in items:
         amount = float(item.amount or 0)
 
-        if amount >= 0 or not item.date:
+        if amount >= 0 or item.transaction_type in {"transfer", "credit_card_payment"} or not item.date:
             continue
 
         month_key = item.date.strftime("%Y-%m")
         monthly_totals[month_key] += abs(amount)
 
-    ordered_months = sorted(monthly_totals.keys())
-    monthly_values = [monthly_totals[key] for key in ordered_months]
-
-    if not monthly_values:
-        return {
-            "predicted_expense": 0,
-            "confidence": 0,
-            "message": "Henüz yeterli gider verisi yok. Tahmin oluşturmak için işlem eklemelisin.",
-        }
-
-    if len(monthly_values) == 1:
-        predicted_expense = monthly_values[-1]
-        confidence = 40
-    else:
-        recent_values = monthly_values[-3:]
-        predicted_expense = sum(recent_values) / len(recent_values)
-
-        if len(monthly_values) >= 3:
-            confidence = 80
-        else:
-            confidence = 65
-
-    predicted_expense = round(predicted_expense, 2)
-
-    message = (
-        f"Mevcut harcama trendine göre gelecek ay yaklaşık "
-        f"{predicted_expense:.2f} TL gider bekleniyor."
-    )
-
-    return {
-        "predicted_expense": predicted_expense,
-        "confidence": confidence,
-        "message": message,
-    }
+    return _calculate_monthly_forecast(dict(monthly_totals))

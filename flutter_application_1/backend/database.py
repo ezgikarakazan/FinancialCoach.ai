@@ -53,6 +53,68 @@ def ensure_user_login_security_columns() -> None:
             connection.execute(text("ALTER TABLE users ADD COLUMN locked_until DATETIME"))
 
 
+def ensure_transaction_source_type_column() -> None:
+    """Eski transaction kayıtlarına banka/kredi kartı kaynağı bilgisi ekler."""
+    inspector = inspect(engine)
+    if "transactions" not in inspector.get_table_names():
+        return
+
+    columns = [col["name"] for col in inspector.get_columns("transactions")]
+    if "source_type" in columns:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE transactions ADD COLUMN source_type VARCHAR(20) DEFAULT 'bank'")
+        )
+
+
+def ensure_transaction_classification_columns() -> None:
+    inspector = inspect(engine)
+    if "transactions" not in inspector.get_table_names():
+        return
+
+    columns = [col["name"] for col in inspector.get_columns("transactions")]
+    with engine.begin() as connection:
+        if "transaction_type" not in columns:
+            connection.execute(
+                text("ALTER TABLE transactions ADD COLUMN transaction_type VARCHAR(30) DEFAULT 'expense'")
+            )
+        if "institution_name" not in columns:
+            connection.execute(
+                text("ALTER TABLE transactions ADD COLUMN institution_name VARCHAR(120) DEFAULT 'Bilinmiyor'")
+            )
+
+
+def ensure_pdf_upload_statement_type_columns() -> None:
+    """Eski PDF yüklemelerine ekstre tipi bilgisini ekler."""
+    inspector = inspect(engine)
+
+    if "pdf_uploads" in inspector.get_table_names():
+        upload_columns = [col["name"] for col in inspector.get_columns("pdf_uploads")]
+        with engine.begin() as connection:
+            if "statement_type" not in upload_columns:
+                connection.execute(
+                    text("ALTER TABLE pdf_uploads ADD COLUMN statement_type VARCHAR(20) DEFAULT 'bank'")
+                )
+            if "institution_name" not in upload_columns:
+                connection.execute(
+                    text("ALTER TABLE pdf_uploads ADD COLUMN institution_name VARCHAR(120) DEFAULT 'Bilinmiyor'")
+                )
+
+    if "pdf_upload_items" in inspector.get_table_names():
+        item_columns = [col["name"] for col in inspector.get_columns("pdf_upload_items")]
+        with engine.begin() as connection:
+            if "source_type" not in item_columns:
+                connection.execute(
+                    text("ALTER TABLE pdf_upload_items ADD COLUMN source_type VARCHAR(20) DEFAULT 'bank'")
+                )
+            if "transaction_type" not in item_columns:
+                connection.execute(
+                    text("ALTER TABLE pdf_upload_items ADD COLUMN transaction_type VARCHAR(30) DEFAULT 'expense'")
+                )
+
+
 def test_connection() -> bool:
     try:
         with engine.connect() as connection:
